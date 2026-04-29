@@ -19,17 +19,18 @@
 //! ## Usage example
 //! ```
 //! extern crate roxmltree_to_serde;
+//! extern crate serde_json;
 //! use roxmltree_to_serde::{xml_string_to_json, Config, NullValue};
 //!
 //! fn main() {
 //!    let xml = r#"<a attr1="1"><b><c attr2="001">some text</c></b></a>"#;
 //!    let conf = Config::new_with_defaults();
-//!    let json = xml_string_to_json(xml.to_owned(), &conf);
-//!    println!("{}", json.expect("Malformed XML").to_string());
+//!    let json = xml_string_to_json(xml.to_owned(), &conf).expect("Malformed XML");
+//!    println!("{json}");
 //!
-//!    let conf = Config::new_with_custom_values(true, "", "txt", NullValue::Null);
-//!    let json = xml_string_to_json(xml.to_owned(), &conf);
-//!    println!("{}", json.expect("Malformed XML").to_string());
+//!    let conf = Config::new_with_custom_values(true, "", "txt", NullValue::Null, false);
+//!    let json = xml_string_to_json(xml.to_owned(), &conf).expect("Malformed XML");
+//!    println!("{json}");
 //! }
 //! ```
 //! * **Output with the default config:** `{"a":{"@attr1":1,"b":{"c":{"#text":"some text","@attr2":1}}}}`
@@ -61,8 +62,8 @@ extern crate serde_json;
 #[cfg(feature = "regex_path")]
 extern crate regex;
 
-use serde_json::{Map, Number, Value};
-#[cfg(feature = "json_types")]
+use serde_json::{Map as GenericMap, Number, Value};
+type Map = GenericMap<String, Value>;
 use std::collections::HashMap;
 
 #[cfg(feature = "regex_path")]
@@ -85,17 +86,41 @@ pub enum NullValue {
 
 /// Defines how the values of this Node should be converted into a JSON array with the underlying types.
 /// * `Infer` - the nodes are converted into a JSON array only if there are multiple identical elements.
-/// E.g. `<a><b>1</b></a>` becomes a map `{"a": {"b": 1 }}` and `<a><b>1</b><b>2</b><b>3</b></a>` becomes
-/// an array `{"a": {"b": [1, 2, 3] }}`
+///   E.g. `<a><b>1</b></a>` becomes a map `{"a": {"b": 1 }}` and `<a><b>1</b><b>2</b><b>3</b></a>` becomes
+///   an array `{"a": {"b": [1, 2, 3] }}`
 /// * `Always` - the nodes are converted into a JSON array regardless of how many there are.
-/// E.g. `<a><b>1</b></a>` becomes an array with a single value `{"a": {"b": [1] }}` and
-/// `<a><b>1</b><b>2</b><b>3</b></a>` also becomes an array `{"a": {"b": [1, 2, 3] }}`
+///   E.g. `<a><b>1</b></a>` becomes an array with a single value `{"a": {"b": [1] }}` and
+///   `<a><b>1</b><b>2</b><b>3</b></a>` also becomes an array `{"a": {"b": [1, 2, 3] }}`
+/// * `PlaceSingletonIntoArray` - the nodes are converted into a JSON array with the specified name
+///   regardless of how many there are, and the value of each node is placed inside an object with the name
+///   of the original node as the key.
+///   E.g. when `array_name` is set to "consonants" and both `/a/b` and `/a/d` match,
+///   `<a><b>1</b></a>` becomes `{"a": {"consonants": [{"b": 1 }] }}` and
+///   `<a><b>1</b><b>2</b><d>3</d></a>` becomes `{"a": {"consonants": [{"b": 1 }, {"b": 2}, {"d": 3}] }}`
 #[derive(Debug)]
 pub enum JsonArray {
-    /// Convert the nodes into a JSON array even if there is only one element
+    /// Convert the nodes into a JSON array even if there is only one element.
+    /// e.g. when matching `/a/b` in `<a><b>1</b></a>` the output will be `{"a": {"b": [1] }}`,
+    /// or when matching `/a/b` in `<a><b>1</b><b>2</b><b>3</b></a>` the output will be `{"a": {"b": [1, 2, 3] }}`.
     Always(JsonType),
     /// Convert the nodes into a JSON array only if there are multiple identical elements
+    /// e.g. when matching `/a/b` in `<a><b>1</b></a>` the output will be `{"a": {"b": 1 }}`,
+    /// or when matching `/a/b` in `<a><b>1</b><b>2</b><b>3</b></a>` the output will be `{"a": {"b": [1, 2, 3] }}`.
     Infer(JsonType),
+    /// e.g. when matching `/a/b` in `<a><b>1</b></a>` with `array_name: "consonants"` the output will be `{"a": {"consonants": [{"b": 1 }] }}`,
+    /// or when matching both `/a/b` and `/a/d` in `<a><b>1</b><b>2</b><d>3</d></a>` with `array_name: "consonants"` the output will be `{"a": {"consonants": [{"b": 1 }, {"b": 2}, {"d": 3}] }}`.
+    PlaceSingletonIntoArray { ty: JsonType, array_name: String, },
+}
+
+impl JsonArray {
+    fn scalar_type(&self) -> &JsonType {
+        match self {
+            | JsonArray::Always(ty)
+            | JsonArray::Infer(ty)
+            | JsonArray::PlaceSingletonIntoArray { ty, .. }
+            => ty,
+        }
+    }
 }
 
 /// Used as a parameter for `Config.add_json_type_override`. Defines how the XML path should be matched
@@ -144,7 +169,7 @@ pub enum JsonType {
     /// E.g. convert `<a>1234</a>` into `{"a":"1234"}` or `<a>true</a>` into `{"a":"true"}`
     AlwaysString,
     /// Convert values included in this member into JSON bool `true` and any other value into `false`.
-    /// E.g. `Bool(vec!["True", "true", "TRUE"]) will result in any of these values to become JSON bool `true`.
+    /// E.g. `Bool(vec!["True", "true", "TRUE"])` will result in any of these values to become JSON bool `true`.
     Bool(Vec<&'static str>),
     /// Attempt to infer the type by looking at the single value of the node being converted.
     /// Not guaranteed to be consistent across multiple nodes.
@@ -174,6 +199,21 @@ pub struct Config {
     pub xml_text_node_prop_name: String,
     /// Defines how empty elements like `<x />` should be handled.
     pub empty_element_handling: NullValue,
+    /// Allow DTD parsing.
+    ///
+    /// When set to `false`, XML with DTD will cause an error.
+    /// Empty DTD block is not an error.
+    ///
+    /// Currently, there is no option to simply skip DTD.
+    /// Mainly because you will get `UnknownEntityReference` error later anyway.
+    ///
+    /// This flag is set to `false` by default for security reasons,
+    /// but `roxmltree` still has checks for billion laughs attack,
+    /// so this is just an extra security measure.
+    ///
+    /// Default: false
+    pub allow_dtd: bool,
+    pub process_xpointer_xincludes: bool,
     /// A map of XML paths with their JsonArray overrides. They take precedence over the document-wide `json_type`
     /// property. The path syntax is based on xPath: literal element names and attribute names prefixed with `@`.
     /// The path must start with a leading `/`. It is a bit of an inconvenience to remember about it, but it saves
@@ -194,12 +234,15 @@ impl Config {
     /// Numbers with leading zero will be treated as numbers.
     /// Prefix XML Attribute names with `@`
     /// Name XML text nodes `#text` for XML Elements with other children
+    #[must_use]
     pub fn new_with_defaults() -> Self {
         Config {
             leading_zero_as_string: false,
             xml_attr_prefix: "@".to_owned(),
             xml_text_node_prop_name: "#text".to_owned(),
             empty_element_handling: NullValue::EmptyObject,
+            allow_dtd: false,
+            process_xpointer_xincludes: false,
             #[cfg(feature = "json_types")]
             json_type_overrides: HashMap::new(),
             #[cfg(feature = "regex_path")]
@@ -208,17 +251,22 @@ impl Config {
     }
 
     /// Create a Config object with non-default values. See the `Config` struct docs for more info.
+    #[must_use]
     pub fn new_with_custom_values(
         leading_zero_as_string: bool,
         xml_attr_prefix: &str,
         xml_text_node_prop_name: &str,
         empty_element_handling: NullValue,
+        allow_dtd: bool,
+        process_xpointer_xincludes: bool,
     ) -> Self {
         Config {
             leading_zero_as_string,
             xml_attr_prefix: xml_attr_prefix.to_owned(),
             xml_text_node_prop_name: xml_text_node_prop_name.to_owned(),
             empty_element_handling,
+            allow_dtd,
+            process_xpointer_xincludes,
             #[cfg(feature = "json_types")]
             json_type_overrides: HashMap::new(),
             #[cfg(feature = "regex_path")]
@@ -233,6 +281,7 @@ impl Config {
     /// - path for `b` text node (007): `/a/b`
     /// - regex path for any `element` node: `(\w/)*element$` [requires `regex_path` feature]
     #[cfg(feature = "json_types")]
+    #[must_use]
     pub fn add_json_type_override<P>(self, path: P, json_type: JsonArray) -> Self
     where
         P: Into<PathMatcher>,
@@ -265,19 +314,14 @@ fn parse_text(text: &str, leading_zero_as_string: bool, json_type: &JsonType) ->
 
     // enforce JSON String data type regardless of the underlying type
     if json_type == &JsonType::AlwaysString {
-        return Value::String(text.into());
+        return Value::from(text);
     }
 
     // enforce JSON Bool data type
     #[cfg(feature = "json_types")]
     if let JsonType::Bool(true_values) = json_type {
-        if true_values.contains(&text) {
-            // any values matching the `true` list are bool/true
-            return Value::Bool(true);
-        } else {
-            // anything else is false
-            return Value::Bool(false);
-        }
+        // any values matching the `true` list are bool/true; anything else is false
+        return Value::from(true_values.contains(&text));
     }
 
     // ints
@@ -286,75 +330,79 @@ fn parse_text(text: &str, leading_zero_as_string: bool, json_type: &JsonType) ->
         // `text` value "0" will always be converted into number 0, "0000" may be converted
         // into 0 or "0000" depending on `leading_zero_as_string`
         if leading_zero_as_string && text.starts_with("0") && (v != 0 || text.len() > 1) {
-            return Value::String(text.into());
+            return Value::from(text);
         }
-        return Value::Number(Number::from(v));
+        return Value::from(Number::from(v));
     }
 
     // floats
     if let Ok(v) = text.parse::<f64>() {
         if text.starts_with("0") && !text.starts_with("0.") {
-            return Value::String(text.into());
+            return Value::from(text);
         }
         if let Some(val) = Number::from_f64(v) {
-            return Value::Number(val);
+            return Value::from(val);
         }
     }
 
     // booleans
     if let Ok(v) = text.parse::<bool>() {
-        return Value::Bool(v);
+        return Value::from(v);
     }
 
-    Value::String(text.into())
+    Value::from(text)
 }
 
 fn convert_text(
     el: &roxmltree::Node,
     config: &Config,
     text: &str,
-    json_type_value: JsonType,
-) -> Option<Value> {
+    #[cfg(feature = "json_types")]
+    path: &str,
+    json_type_value: &JsonType,
+) -> Value {
     // process node's attributes, if present
     if el.attributes().count() > 0 {
-        Some(Value::Object(
+        Value::from(
             el.attributes()
                 .map(|attr| {
                     // add the current node to the path
                     #[cfg(feature = "json_types")]
-                    let path = [path.clone(), "/@".to_owned(), attr.name().to_string()].concat();
+                    let path = [path, "/@", attr.name()].concat();
                     // get the json_type for this node
                     #[cfg(feature = "json_types")]
-                    let (_, json_type_value) = get_json_type(config, &path);
+                    let json_type_value = get_json_type(config, &path).scalar_type();
                     (
-                        [config.xml_attr_prefix.clone(), attr.name().to_string()].concat(),
+                        [&config.xml_attr_prefix, attr.name()].concat(),
                         parse_text(
                             attr.value(),
                             config.leading_zero_as_string,
-                            &json_type_value,
+                            json_type_value,
                         ),
                     )
                 })
                 .chain(vec![(
                     config.xml_text_node_prop_name.clone(),
-                    parse_text(&text[..], config.leading_zero_as_string, &json_type_value),
+                    parse_text(text, config.leading_zero_as_string, &json_type_value),
                 )])
-                .collect(),
-        ))
+                .collect::<Map>(),
+        )
     } else {
-        Some(parse_text(
-            &text[..],
+        parse_text(
+            text,
             config.leading_zero_as_string,
             &json_type_value,
-        ))
+        )
     }
 }
 
 fn convert_no_text(
     el: &roxmltree::Node,
     config: &Config,
-    path: &String,
-    json_type_value: JsonType,
+    path: &str,
+    #[cfg(not(feature = "json_types"))]
+    json_type_value: &JsonType,
+    xpointer_pointees: &mut HashMap<String, (String, Value)>,
 ) -> Option<Value> {
     // this element has no text, but may have other child nodes
     let mut data = Map::new();
@@ -362,111 +410,149 @@ fn convert_no_text(
     for attr in el.attributes() {
         // add the current node to the path
         #[cfg(feature = "json_types")]
-        let path = [path.clone(), "/@".to_owned(), attr.name().to_string()].concat();
+        let path = [path, "/@", attr.name()].concat();
         // get the json_type for this node
         #[cfg(feature = "json_types")]
-        let (_, json_type_value) = get_json_type(config, &path);
+        let json_type_value = get_json_type(config, &path).scalar_type();
+        if config.process_xpointer_xincludes && attr.namespace() == Some("http://www.w3.org/XML/1998/namespace") && attr.name() == "id" {
+            continue;
+        }
         data.insert(
-            [config.xml_attr_prefix.clone(), attr.name().to_string()].concat(),
+            [&config.xml_attr_prefix, attr.name()].concat(),
             parse_text(
                 attr.value(),
                 config.leading_zero_as_string,
-                &json_type_value,
+                json_type_value,
             ),
         );
     }
 
     // process child element recursively
     for child in el.children() {
-        match convert_node(&child, config, &path) {
-            Some(val) => {
-                let name = &child.tag_name().name().to_string();
-                if name == "" {
-                    ()
-                } else {
-                    #[cfg(feature = "json_types")]
-                    let path = [path.clone(), "/".to_owned(), name.clone()].concat();
-                    let (json_type_array, _) = get_json_type(config, &path);
+        if let Some((val, name)) = convert_node(&child, config, &path, xpointer_pointees) {
+            let name = name.as_deref().unwrap_or_else(|| child.tag_name().name());
+            if !name.is_empty() {
+                #[cfg(feature = "json_types")]
+                let path = [path, "/", name].concat();
 
-                    // does it have to be an array?
-                    if json_type_array || data.contains_key(name) {
+                match (get_json_type(config, &path), data.contains_key(name)) {
+                    (JsonArray::Always(_), _) | (JsonArray::Infer(_), true) => {
                         // was this property converted to an array earlier?
-                        if data.get(name).unwrap_or(&Value::Null).is_array() {
-                            // add the new value to an existing array
-                            data.get_mut(name)
-                                .unwrap()
-                                .as_array_mut()
-                                .unwrap()
-                                .push(val);
-                        } else {
-                            // convert the property to an array with the existing and the new values
-                            let new_val = match data.remove(name) {
-                                None => vec![val],
-                                Some(temp) => vec![temp, val],
-                            };
-                            data.insert(name.clone(), Value::Array(new_val));
+                        match data.entry(name) {
+                            serde_json::map::Entry::Vacant(vacant_entry) => {
+                                // absent, so add the new value to a new array
+                                vacant_entry.insert(Value::from(vec![val]));
+                            }
+                            serde_json::map::Entry::Occupied(mut occupied_entry) => {
+                                match occupied_entry.get_mut() {
+                                    Value::Array(values) => {
+                                        // add the new value to an existing array
+                                        values.push(val);
+                                    }
+                                    lval => {
+                                        // convert the property to an array with the existing and the new values
+                                        *lval = Value::from(vec![std::mem::take(lval), val]);
+                                    }
+                                }
+                            }
                         }
-                    } else {
+                    }
+                    (JsonArray::Infer(_), false) => {
                         // this is the first time this property is encountered and it doesn't
                         // have to be an array, so add it as-is
-                        data.insert(name.clone(), val);
+                        let name = name.to_owned();
+                        data.insert(name, val);
+                    }
+                    (JsonArray::PlaceSingletonIntoArray { ty: _, array_name }, _) => {
+                        let val = [(name.to_owned(), val)].into_iter().collect();
+                        match data.entry(array_name) {
+                            serde_json::map::Entry::Vacant(vacant_entry) => {
+                                vacant_entry.insert(Value::from(vec![val]));
+                            }
+                            serde_json::map::Entry::Occupied(mut occupied_entry) => {
+                                match occupied_entry.get_mut() {
+                                    Value::Array(values) => { values.push(val); }
+                                    lval => { *lval = Value::from(vec![std::mem::take(lval), val]); }
+                                }
+                            }
+                        }
                     }
                 }
             }
-            _ => (),
         }
     }
 
     // return the JSON object if it's not empty
     if !data.is_empty() {
-        return Some(Value::Object(data));
+        return Some(data.into());
     }
 
     // empty objects are treated according to config rules set by the caller
     match config.empty_element_handling {
         NullValue::Null => Some(Value::Null),
-        NullValue::EmptyObject => Some(Value::Object(data)),
+        NullValue::EmptyObject => Some(data.into()),
         NullValue::Ignore => None,
     }
 }
 
 /// Converts an XML Element into a JSON property
-fn convert_node(el: &roxmltree::Node, config: &Config, path: &String) -> Option<Value> {
+fn convert_node(el: &roxmltree::Node, config: &Config, path: &str, xpointer_pointees: &mut HashMap<String, (String, Value)>) -> Option<(Value, Option<String>)> {
+
+    if config.process_xpointer_xincludes
+        && (el.tag_name() == roxmltree::ExpandedName::from_static("http://www.w3.org/2001/XInclude", "include")) && el.text().is_none() && !el.has_children() {
+            if let &[xpointer] = &el.attributes().filter(|a| a.name() == "xpointer").map(|a| a.value()).collect::<Vec<_>>()[..] {
+                if let Some((rename, pointee)) = xpointer_pointees.get(xpointer).cloned() {
+                    return Some((pointee, Some(rename)));
+                }
+            }
+        }
+
     // add the current node to the path
     #[cfg(feature = "json_types")]
     let path = [path, "/", el.tag_name().name()].concat();
 
     // get the json_type for this node
-    let (_, json_type_value) = get_json_type(config, &path);
-    let json_type_value = json_type_value.clone();
+    let json_type_value = get_json_type(config, &path).scalar_type().clone();
 
     // is it an element with text?
-    match el.text() {
+    let out = match el.text() {
         Some(mut text) => {
             text = text.trim();
 
-            if text != "" {
-                convert_text(el, config, text, json_type_value)
+            if text.is_empty() {
+                convert_no_text(el, config, &path, #[cfg(not(feature = "json_types"))] &json_type_value, xpointer_pointees)
             } else {
-                convert_no_text(el, config, path, json_type_value)
+                Some(convert_text(el, config, text, #[cfg(feature = "json_types")] &path, &json_type_value))
             }
         }
-        None => convert_no_text(el, config, path, json_type_value),
+        None => convert_no_text(el, config, &path, #[cfg(not(feature = "json_types"))] &json_type_value, xpointer_pointees),
+    };
+
+    if config.process_xpointer_xincludes {
+        if let Some(id) = el.attribute(("http://www.w3.org/XML/1998/namespace", "id")) {
+            if let Some(out) = &out {
+                xpointer_pointees.insert(id.to_owned(), (el.tag_name().name().to_owned(), out.clone()));
+            }
+        }
     }
+
+    out.map(|out| (out, None))
 }
 
 fn xml_to_map(e: &roxmltree::Node, config: &Config) -> Value {
     let mut data = Map::new();
-    data.insert(
-        e.tag_name().name().to_string(),
-        convert_node(&e, &config, &String::new()).unwrap_or(Value::Null),
-    );
-    Value::Object(data)
+    let name = e.tag_name().name().to_owned();
+    let mut xpointer_pointees = HashMap::default();
+    let (val, new_name) = convert_node(&e, &config, "", &mut xpointer_pointees).unwrap_or((Value::Null, None));
+    let name = new_name.unwrap_or(name);
+    data.insert(name, val);
+    data.into()
 }
 
 /// Converts the given XML string into `serde::Value` using settings from `Config` struct.
 pub fn xml_str_to_json(xml: &str, config: &Config) -> Result<Value, roxmltree::Error> {
-    let doc = roxmltree::Document::parse(xml)?;
+    let Config { allow_dtd, .. } = *config;
+    let doc = roxmltree::Document::parse_with_options(xml, roxmltree::ParsingOptions { allow_dtd, .. Default::default() })?;
     let root = doc.root_element();
     Ok(xml_to_map(&root, config))
 }
@@ -483,23 +569,19 @@ pub fn xml_string_to_json(xml: String, config: &Config) -> Result<Value, roxmltr
 #[inline]
 fn get_json_type_with_absolute_path<'conf>(
     config: &'conf Config,
-    path: &String,
-) -> (bool, &'conf JsonType) {
-    match config
+    path: &str,
+) -> &'conf JsonArray {
+    config
         .json_type_overrides
         .get(path)
         .unwrap_or(&JsonArray::Infer(JsonType::Infer))
-    {
-        JsonArray::Infer(v) => (false, v),
-        JsonArray::Always(v) => (true, v),
-    }
 }
 
 /// Simply returns `get_json_type_with_absolute_path` if `regex_path` feature is disabled.
 #[cfg(feature = "json_types")]
 #[cfg(not(feature = "regex_path"))]
 #[inline]
-fn get_json_type<'conf>(config: &'conf Config, path: &String) -> (bool, &'conf JsonType) {
+fn get_json_type<'conf>(config: &'conf Config, path: &str) -> &'conf JsonArray {
     get_json_type_with_absolute_path(config, path)
 }
 
@@ -509,22 +591,19 @@ fn get_json_type<'conf>(config: &'conf Config, path: &String) -> (bool, &'conf J
 #[cfg(feature = "json_types")]
 #[cfg(feature = "regex_path")]
 #[inline]
-fn get_json_type<'conf>(config: &'conf Config, path: &String) -> (bool, &'conf JsonType) {
+fn get_json_type<'conf>(config: &'conf Config, path: &str) -> &'conf JsonArray {
     for (regex, json_array) in &config.json_regex_type_overrides {
         if regex.is_match(path) {
-            return match json_array {
-                JsonArray::Infer(v) => (false, v),
-                JsonArray::Always(v) => (true, v),
-            };
+            return json_array;
         }
     }
 
     get_json_type_with_absolute_path(config, path)
 }
 
-/// Always returns `(false, JsonArray::Infer(JsonType::Infer)` if `json_types` feature is not enabled.
+/// Always returns `JsonArray::Infer(JsonType::Infer)` if `json_types` feature is not enabled.
 #[cfg(not(feature = "json_types"))]
 #[inline]
-fn get_json_type<'conf>(_config: &'conf Config, _path: &String) -> (bool, &'conf JsonType) {
-    (false, &JsonType::Infer)
+fn get_json_type<'conf>(_config: &'conf Config, _path: &str) -> &'conf JsonArray {
+    &JsonArray::Infer(JsonType::Infer)
 }

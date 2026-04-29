@@ -1,5 +1,6 @@
 use super::*;
-use serde_json::{json, to_string_pretty};
+use serde_json::to_string_pretty;
+use serde_json::json;
 use std::fs::File;
 use std::io::prelude::*;
 
@@ -20,7 +21,7 @@ fn test_numbers() {
 
 #[test]
 fn test_empty_elements_valid() {
-    let mut conf = Config::new_with_custom_values(true, "", "text", NullValue::EmptyObject);
+    let mut conf = Config::new_with_custom_values(true, "", "text", NullValue::EmptyObject, false, false);
     let xml = r#"<a b="1"><x/></a>"#;
 
     let expected = json!({ "a": {"b":1, "x":{}} });
@@ -40,7 +41,7 @@ fn test_empty_elements_valid() {
 
 #[test]
 fn test_empty_elements_invalid() {
-    let conf = Config::new_with_custom_values(true, "", "text", NullValue::Ignore);
+    let conf = Config::new_with_custom_values(true, "", "text", NullValue::Ignore, false, false);
     let expected = json!({ "a": null });
 
     let xml = r#"<a><x/></a>"#;
@@ -73,7 +74,7 @@ fn test_mixed_nodes() {
             "text":"some text"
         }
     });
-    let conf = Config::new_with_custom_values(true, "", "text", NullValue::Null);
+    let conf = Config::new_with_custom_values(true, "", "text", NullValue::Null, false, false);
     let result_2 = xml_string_to_json(String::from(xml), &conf);
     assert_eq!(expected_2, result_2.unwrap());
 
@@ -91,12 +92,12 @@ fn test_add_json_type_override() {
     // check if it adds the leading slash
     let config = Config::new_with_defaults()
         .add_json_type_override("a/@attr1", JsonArray::Infer(JsonType::AlwaysString));
-    assert!(config.json_type_overrides.get("/a/@attr1").is_some());
+    assert!(config.json_type_overrides.contains_key("/a/@attr1"));
 
     // check if it doesn't add any extra slashes
     let config = Config::new_with_defaults()
         .add_json_type_override("/a/@attr1", JsonArray::Infer(JsonType::AlwaysString));
-    assert!(config.json_type_overrides.get("/a/@attr1").is_some());
+    assert!(config.json_type_overrides.contains_key("/a/@attr1"));
 }
 
 #[cfg(feature = "json_types")]
@@ -269,7 +270,7 @@ fn test_enforce_array() {
             "b": [null]
         }
     });
-    let config = Config::new_with_custom_values(false, "@", "#text", NullValue::Null)
+    let config = Config::new_with_custom_values(false, "@", "#text", NullValue::Null, false)
         .add_json_type_override("/a/b", JsonArray::Always(JsonType::Infer));
     let result = xml_string_to_json(String::from(xml), &config);
     assert_eq!(expected, result.unwrap());
@@ -296,10 +297,7 @@ fn test_parse_text() {
     assert_eq!("0x03", parse_text("0x03", true, &JsonType::Infer));
     assert_eq!("142,4200", parse_text("142,4200", true, &JsonType::Infer));
     assert_eq!("142,420,0", parse_text("142,420,0", true, &JsonType::Infer));
-    assert_eq!(
-        "142,420,0.0",
-        parse_text("142,420,0.0", true, &JsonType::Infer)
-    );
+    assert_eq!("142,420,0.0", parse_text("142,420,0.0", true, &JsonType::Infer));
     assert_eq!("0Test", parse_text("0Test", true, &JsonType::Infer));
     assert_eq!("0.Test", parse_text("0.Test", true, &JsonType::Infer));
     assert_eq!("0.22Test", parse_text("0.22Test", true, &JsonType::Infer));
@@ -350,7 +348,7 @@ fn convert_test_files() {
 
     entries.sort();
 
-    let conf = Config::new_with_custom_values(true, "", "text", NullValue::Null);
+    let conf = Config::new_with_custom_values(true, "", "text", NullValue::Null, false, false);
 
     for mut entry in entries {
         // only XML files should be processed
@@ -455,6 +453,73 @@ fn test_regex_json_type_overrides() {
         Regex::new(r"element").unwrap(),
         JsonArray::Always(JsonType::Infer),
     );
+
+    let result = xml_string_to_json(String::from(xml), &config);
+    assert_eq!(expected, result.unwrap());
+
+    let xml = r#"
+        <a attr1="att1">
+            <element name="el1" />
+            <element name="el2" />
+            <c attr3="att3">
+                <element name="el4" />
+            </c>
+            <b attr2="att2">
+                <element name="el3" />
+            </b>
+            <b attr4="att4">
+                <element name="el5" />
+            </b>
+        </a>
+    "#;
+
+    let expected = json!({
+        "a": {
+            "@attr1": "att1",
+            "element": [
+                { "@name": "el1" },
+                { "@name": "el2" }
+            ],
+            "consonants": [
+                {
+                    "c": {
+                        "@attr3": "att3",
+                        "element": [
+                            { "@name": "el4" }
+                        ]
+                    }
+                },
+                {
+                    "b": {
+                        "@attr2": "att2",
+                        "element": [
+                            { "@name": "el3" }
+                        ]
+                    }
+                },
+                {
+                    "b": {
+                        "@attr4": "att4",
+                        "element": [
+                            { "@name": "el5" }
+                        ]
+                    }
+                }
+            ]
+        }
+    });
+
+
+
+    let config = Config::new_with_defaults()
+        .add_json_type_override(
+        Regex::new(r"element").unwrap(),
+        JsonArray::Always(JsonType::Infer),
+        )
+        .add_json_type_override(
+            Regex::new(r"/a/[b-df-ij-np-tv-z]").unwrap(),
+            JsonArray::PlaceSingletonIntoArray { ty: JsonType::Infer, array_name: "consonants".to_owned() }
+        );
 
     let result = xml_string_to_json(String::from(xml), &config);
     assert_eq!(expected, result.unwrap());
