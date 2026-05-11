@@ -365,6 +365,9 @@ fn convert_text(
     if el.attributes().count() > 0 {
         Value::from(
             el.attributes()
+                .filter(|attr| {
+                    !(config.process_xpointer_xincludes && attr.namespace() == Some("http://www.w3.org/XML/1998/namespace") && attr.name() == "id")
+                })
                 .map(|attr| {
                     // add the current node to the path
                     #[cfg(feature = "json_types")]
