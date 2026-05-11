@@ -362,12 +362,12 @@ fn convert_text(
     json_type_value: &JsonType,
 ) -> Value {
     // process node's attributes, if present
-    if el.attributes().count() > 0 {
+    let mut attributes = el.attributes().filter(|attr| {
+        !(config.process_xpointer_xincludes && attr.namespace() == Some("http://www.w3.org/XML/1998/namespace") && attr.name() == "id")
+    }).peekable();
+    if attributes.peek().is_some() {
         Value::from(
-            el.attributes()
-                .filter(|attr| {
-                    !(config.process_xpointer_xincludes && attr.namespace() == Some("http://www.w3.org/XML/1998/namespace") && attr.name() == "id")
-                })
+            attributes
                 .map(|attr| {
                     // add the current node to the path
                     #[cfg(feature = "json_types")]
